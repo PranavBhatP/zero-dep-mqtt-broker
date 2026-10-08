@@ -79,6 +79,7 @@ Most real-world IoT deployments rely on large, heavy third-party message brokers
 ```
 acn-course-project/
 ├── IT365_MidSem_Presentation.pdf   # Mid-Semester Evaluation Presentation (16:9 Beamer, 17 slides)
+├── IT365_MidsemPresentation.pdf   # Original Project Proposal Presentation
 ├── IT365_MidSem_Report.pdf         # Mid-Semester Technical Report (IEEE Conference Format, 4 pages)
 ├── PLAN.md                        # Master architectural blueprint & 3-phase implementation plan
 ├── README.md                      # Project documentation and guide

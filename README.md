@@ -11,6 +11,15 @@ An ultra-lightweight, high-performance MQTT 3.1.1 message broker developed entir
 
 ---
 
+## Mid-Semester Evaluation Deliverables
+
+- **Technical Report:** [`IT365_MidSem_Report.pdf`](IT365_MidSem_Report.pdf)  
+  *IEEE Conference format (4 pages), detailing problem formulation, theoretical foundations, zero-dependency socket architecture, and Phase 1 verification methodology.*
+- **Evaluation Presentation:** [`IT365_MidSem_Presentation.pdf`](IT365_MidSem_Presentation.pdf)  
+  *17-slide LaTeX Beamer presentation (16:9 widescreen) covering project objectives, Linux epoll reactor, stream framing buffers, bitwise decoders, live verification matrices, and Phases 2 & 3 roadmap.*
+
+---
+
 ## 1. Project Motivation & Philosophy
 
 Most real-world IoT deployments rely on large, heavy third-party message brokers (e.g., Mosquitto, HiveMQ, EMQX) that carry extensive external dependency chains. The goal of this project is to implement an MQTT 3.1.1 compliant broker from first principles to deeply master and demonstrate core networking concepts:
@@ -69,7 +78,8 @@ Most real-world IoT deployments rely on large, heavy third-party message brokers
 
 ```
 acn-course-project/
-├── IT365_MidsemPresentation.pdf   # Original project presentation & proposal
+├── IT365_MidSem_Presentation.pdf   # Mid-Semester Evaluation Presentation (16:9 Beamer, 17 slides)
+├── IT365_MidSem_Report.pdf         # Mid-Semester Technical Report (IEEE Conference Format, 4 pages)
 ├── PLAN.md                        # Master architectural blueprint & 3-phase implementation plan
 ├── README.md                      # Project documentation and guide
 ├── Makefile                       # GNU Makefile (strict c11, -Wall -Wextra -pedantic -O2)

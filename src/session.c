@@ -310,3 +310,4 @@ bool session_queue_offline_message(mqtt_session_t *session, const char *topic,
     session->queue_count++;
     return true;
 }
+

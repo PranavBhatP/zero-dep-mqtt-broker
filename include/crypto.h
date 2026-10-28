@@ -64,3 +64,4 @@ size_t crypto_decrypt_payload(const uint8_t key[CHACHA20_KEY_SIZE],
                               uint8_t *out, size_t out_max_len);
 
 #endif /* CRYPTO_H */
+

@@ -272,3 +272,4 @@ size_t crypto_decrypt_payload(const uint8_t key[CHACHA20_KEY_SIZE],
     chacha20_crypt(key, nonce, 1, ciphertext, out, ciphertext_len);
     return ciphertext_len;
 }
+

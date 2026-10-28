@@ -48,3 +48,4 @@ bool retained_store_put(retained_store_t *store, const char *topic,
 const retained_msg_t *retained_store_get(retained_store_t *store, const char *topic);
 
 #endif /* RETAINED_H */
+

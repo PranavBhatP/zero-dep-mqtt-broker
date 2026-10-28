@@ -135,3 +135,4 @@ const retained_msg_t *retained_store_get(retained_store_t *store, const char *to
     pthread_mutex_unlock(&store->lock);
     return NULL;
 }
+

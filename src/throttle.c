@@ -74,3 +74,4 @@ bool client_throttle_consume(client_throttle_t *ct, size_t bytes) {
     ct->total_bytes += bytes;
     return true;
 }
+

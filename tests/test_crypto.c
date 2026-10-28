@@ -76,3 +76,4 @@ int main(void) {
     printf("ALL CRYPTOGRAPHY TESTS PASSED SUCCESSFULLY!\n");
     return 0;
 }
+

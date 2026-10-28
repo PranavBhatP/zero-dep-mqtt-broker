@@ -156,3 +156,4 @@ bool session_queue_offline_message(mqtt_session_t *session, const char *topic,
                                   uint8_t qos, uint8_t retain, uint16_t packet_id);
 
 #endif /* SESSION_H */
+

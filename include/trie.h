@@ -117,3 +117,4 @@ void trie_update_client_socket(trie_node_t *root, const char *client_id, int new
 size_t trie_match_subscribers(trie_node_t *root, const char *publish_topic, match_result_t *out_result);
 
 #endif /* TRIE_H */
+

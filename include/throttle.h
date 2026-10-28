@@ -53,3 +53,4 @@ void client_throttle_init(client_throttle_t *ct, double pkt_rate, double pkt_bur
 bool client_throttle_consume(client_throttle_t *ct, size_t bytes);
 
 #endif /* THROTTLE_H */
+

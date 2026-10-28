@@ -40,3 +40,4 @@ void telemetry_dump_cli(broker_telemetry_t *t);
 size_t telemetry_render_json(broker_telemetry_t *t, char *buf, size_t max_len);
 
 #endif /* TELEMETRY_H */
+

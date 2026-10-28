@@ -77,3 +77,4 @@ size_t telemetry_render_json(broker_telemetry_t *t, char *buf, size_t max_len) {
     pthread_mutex_unlock(&t->lock);
     return (written > 0 && (size_t)written < max_len) ? (size_t)written : 0;
 }
+

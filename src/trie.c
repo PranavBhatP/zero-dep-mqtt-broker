@@ -360,3 +360,4 @@ size_t trie_match_subscribers(trie_node_t *root, const char *publish_topic, matc
     match_recursive(root, levels, 0, num_levels, out_result);
     return out_result->count;
 }
+

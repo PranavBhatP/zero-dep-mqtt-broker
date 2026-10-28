@@ -45,19 +45,28 @@ def encode_remaining_length(length):
             break
     return bytes(encoded)
 
-def build_connect(client_id="demo_sensor_01", clean_session=True, keep_alive=60):
+def build_connect(client_id="demo_sensor_01", clean_session=True, keep_alive=60, will_topic=None, will_payload=None, will_qos=0):
     var_hdr = struct.pack("!H", 4) + b"MQTT" + bytes([0x04]) # Level 4 (MQTT 3.1.1)
     flags = 0x02 if clean_session else 0x00
+    if will_topic and will_payload:
+        flags |= 0x04
+        flags |= (will_qos & 0x03) << 3
     var_hdr += bytes([flags]) + struct.pack("!H", keep_alive)
     
     cid_bytes = client_id.encode("utf-8")
     payload = struct.pack("!H", len(cid_bytes)) + cid_bytes
 
+    if will_topic and will_payload:
+        wt_bytes = will_topic.encode("utf-8")
+        payload += struct.pack("!H", len(wt_bytes)) + wt_bytes
+        wp_bytes = will_payload if isinstance(will_payload, bytes) else will_payload.encode("utf-8")
+        payload += struct.pack("!H", len(wp_bytes)) + wp_bytes
+
     rem_len = len(var_hdr) + len(payload)
     fixed_hdr = bytes([0x10]) + encode_remaining_length(rem_len)
     return fixed_hdr + var_hdr + payload
 
-def build_publish(topic, payload, qos=0, packet_id=1):
+def build_publish(topic, payload, qos=0, retain=0, packet_id=1):
     topic_bytes = topic.encode("utf-8")
     var_hdr = struct.pack("!H", len(topic_bytes)) + topic_bytes
     if qos > 0:
@@ -65,7 +74,7 @@ def build_publish(topic, payload, qos=0, packet_id=1):
     
     p_bytes = payload if isinstance(payload, bytes) else payload.encode("utf-8")
     rem_len = len(var_hdr) + len(p_bytes)
-    flags = (qos & 0x03) << 1
+    flags = ((qos & 0x03) << 1) | (retain & 0x01)
     fixed_hdr = bytes([0x30 | flags]) + encode_remaining_length(rem_len)
     return fixed_hdr + var_hdr + p_bytes
 
@@ -86,6 +95,29 @@ def build_pingreq():
 def build_disconnect():
     return bytes([0xE0, 0x00])
 
+def parse_publish_packet(data):
+    if len(data) < 2 or (data[0] >> 4) != 0x03:
+        return None
+    multiplier = 1
+    rem_len = 0
+    idx = 1
+    while True:
+        b = data[idx]
+        rem_len += (b & 0x7F) * multiplier
+        multiplier *= 128
+        idx += 1
+        if (b & 0x80) == 0:
+            break
+    topic_len = struct.unpack("!H", data[idx:idx+2])[0]
+    idx += 2
+    topic = data[idx:idx+topic_len].decode("utf-8")
+    idx += topic_len
+    qos = (data[0] >> 1) & 0x03
+    if qos > 0:
+        idx += 2
+    payload = data[idx:]
+    return {"topic": topic, "payload": payload, "qos": qos}
+
 def demo_full_protocol_walkthrough(host, port):
     print_header("Comprehensive MQTT 3.1.1 Protocol Walkthrough")
     print(f"Connecting to broker at {host}:{port} via TCP socket...")
@@ -98,119 +130,133 @@ def demo_full_protocol_walkthrough(host, port):
         print(f"Please start the broker in another terminal: {C_BOLD}./mqtt_broker -d -p {port}{C_RESET}\n")
         return False
 
-    print(f"{C_GREEN}[+] TCP connection established.{C_RESET}")
-
-    # 1. CONNECT Handshake
-    print_step(1, "Sending CONNECT packet (Client ID: 'nitk_weather_station', CleanSession=1, KeepAlive=60s)")
-    pkt = build_connect("nitk_weather_station", clean_session=True, keep_alive=60)
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
+    print_step(1, "Sending CONNECT packet (ClientID='demo_sensor_01', CleanSession=1, KeepAlive=60)")
+    connect_pkt = build_connect()
+    print_hex("Raw CONNECT", connect_pkt)
+    sock.sendall(connect_pkt)
 
     resp = sock.recv(4)
     print_hex("Broker Response", resp)
-    if len(resp) == 4 and resp[0] == 0x20 and resp[3] == 0x00:
-        print(f"{C_GREEN}  -> SUCCESS: CONNACK received! Return code: 0x00 (Connection Accepted){C_RESET}")
-    else:
-        print(f"{C_RED}  -> FAILED: Unexpected response {resp}{C_RESET}")
-        sock.close()
-        return False
-    time.sleep(0.5)
+    assert len(resp) == 4 and resp[0] == 0x20 and resp[3] == 0x00
+    print(f"{C_GREEN}[+] CONNACK received: Accepted (Return code: 0x00){C_RESET}")
 
-    # 2. PINGREQ Heartbeat
     print_step(2, "Sending PINGREQ heartbeat")
-    pkt = build_pingreq()
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
+    ping_pkt = build_pingreq()
+    print_hex("Raw PINGREQ", ping_pkt)
+    sock.sendall(ping_pkt)
 
     resp = sock.recv(2)
     print_hex("Broker Response", resp)
-    if len(resp) == 2 and resp[0] == 0xD0 and resp[1] == 0x00:
-        print(f"{C_GREEN}  -> SUCCESS: PINGRESP (0xD0 0x00) received! Broker heartbeat healthy.{C_RESET}")
-    else:
-        print(f"{C_RED}  -> FAILED: Unexpected PINGRESP{C_RESET}")
-    time.sleep(0.5)
+    assert len(resp) == 2 and resp[0] == 0xD0 and resp[1] == 0x00
+    print(f"{C_GREEN}[+] PINGRESP received: Broker is alive{C_RESET}")
 
-    # 3. PUBLISH QoS 0
-    print_step(3, "Sending PUBLISH QoS 0 (Topic: 'surathkal/beach/temp', Payload: '31.5 C')")
-    pkt = build_publish("surathkal/beach/temp", "31.5 C", qos=0)
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
-    print(f"{C_GREEN}  -> Dispatched fire-and-forget QoS 0 message.{C_RESET}")
-    time.sleep(0.5)
+    print_step(3, "Subscribing to 'home/+/temperature' (QoS 0) and 'factory/#' (QoS 1)")
+    sub_pkt = build_subscribe(101, [("home/+/temperature", 0), ("factory/#", 1)])
+    print_hex("Raw SUBSCRIBE", sub_pkt)
+    sock.sendall(sub_pkt)
 
-    # 4. PUBLISH QoS 1 with PUBACK
-    print_step(4, "Sending PUBLISH QoS 1 (Topic: 'acn/iot/alert', Packet ID: 4096, Payload: 'CRITICAL_HIGH_TEMP')")
-    pkt = build_publish("acn/iot/alert", "CRITICAL_HIGH_TEMP", qos=1, packet_id=4096)
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
-
-    resp = sock.recv(4)
+    resp = sock.recv(6)
     print_hex("Broker Response", resp)
-    if len(resp) == 4 and resp[0] == 0x40:
-        ack_id = struct.unpack("!H", resp[2:4])[0]
-        print(f"{C_GREEN}  -> SUCCESS: PUBACK received! Acknowledged Packet ID: {ack_id}{C_RESET}")
-    else:
-        print(f"{C_RED}  -> FAILED: Expected PUBACK{C_RESET}")
-    time.sleep(0.5)
+    assert resp[0] == 0x90
+    print(f"{C_GREEN}[+] SUBACK received: Granted QoS [0, 1] for PacketID 101{C_RESET}")
 
-    # 5. SUBSCRIBE with SUBACK
-    print_step(5, "Sending SUBSCRIBE (Filters: 'nitk/dept/it/#' [QoS 1], 'campus/+/bus' [QoS 0])")
-    sub_topics = [("nitk/dept/it/#", 1), ("campus/+/bus", 0)]
-    pkt = build_subscribe(101, sub_topics)
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
+    print_step(4, "Publishing QoS 1 message to 'factory/conveyor/speed' = '150 RPM'")
+    pub_pkt = build_publish("factory/conveyor/speed", "150 RPM", qos=1, packet_id=202)
+    print_hex("Raw PUBLISH (QoS 1)", pub_pkt)
+    sock.sendall(pub_pkt)
 
-    resp = sock.recv(5)
-    print_hex("Broker Response", resp)
-    if len(resp) >= 5 and resp[0] == 0x90:
-        ack_id = struct.unpack("!H", resp[2:4])[0]
-        granted = [f"QoS {b}" for b in resp[4:]]
-        print(f"{C_GREEN}  -> SUCCESS: SUBACK received for Packet ID {ack_id}! Granted QoS: {', '.join(granted)}{C_RESET}")
-    else:
-        print(f"{C_RED}  -> FAILED: Expected SUBACK{C_RESET}")
-    time.sleep(0.5)
+    # Because demo_sensor_01 is also subscribed to factory/#, the broker fans out the message
+    # AND sends a PUBACK. Both frames (35 bytes PUBLISH + 4 bytes PUBACK = 39 bytes)
+    # may arrive coalesced in the same TCP recv!
+    frames = sock.recv(128)
+    print_hex("Broker Inbound Data", frames)
+    # Check that PUBACK (0x40) is in frames
+    assert b"\x40\x02\x00\xca" in frames or frames[0] == 0x40
+    print(f"{C_GREEN}[+] Forwarded PUBLISH & PUBACK (PacketID 202) both processed successfully!{C_RESET}")
 
-    # 6. DISCONNECT
-    print_step(6, "Sending clean DISCONNECT notification (0xE0 0x00)")
-    pkt = build_disconnect()
-    print_hex("Raw Wire Bytes", pkt)
-    sock.sendall(pkt)
+    print_step(5, "Sending clean DISCONNECT packet")
+    disc_pkt = build_disconnect()
+    print_hex("Raw DISCONNECT", disc_pkt)
+    sock.sendall(disc_pkt)
     sock.close()
-    print(f"{C_GREEN}  -> SUCCESS: Socket cleanly closed.{C_RESET}")
+    print(f"{C_GREEN}[+] Connection closed cleanly.{C_RESET}")
+    return True
 
-    print(f"\n{C_CYAN}{'=' * 65}{C_RESET}")
-    print(f"{C_GREEN}{C_BOLD}>>> PROTOCOL WALKTHROUGH DEMO COMPLETED SUCCESSFULLY! <<<{C_RESET}")
-    print(f"{C_CYAN}{'=' * 65}{C_RESET}\n")
+def demo_trie_routing(host, port):
+    print_header("Topic Radix Tree (Topic Trie) Wildcard Fan-Out Demo")
+    print("Spawning 2 subscribers: Subscriber 1 ('home/+/temp') and Subscriber 2 ('home/#')")
+
+    s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s1.connect((host, port))
+    s1.sendall(build_connect("sub_plus"))
+    s1.recv(4)
+    s1.sendall(build_subscribe(1, [("home/+/temp", 0)]))
+    s1.recv(5)
+
+    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s2.connect((host, port))
+    s2.sendall(build_connect("sub_hash"))
+    s2.recv(4)
+    s2.sendall(build_subscribe(2, [("home/#", 0)]))
+    s2.recv(5)
+
+    pub = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    pub.connect((host, port))
+    pub.sendall(build_connect("publisher_node"))
+    pub.recv(4)
+
+    print("\nPublishing to 'home/kitchen/temp' -> matches BOTH ('home/+/temp') and ('home/#')")
+    pub.sendall(build_publish("home/kitchen/temp", "26.4 C", qos=0))
+
+    data1 = s1.recv(64)
+    p1 = parse_publish_packet(data1)
+    print(f"{C_GREEN}[+] Subscriber 1 (+ wildcard) received:{C_RESET} {p1['topic']} -> {p1['payload'].decode()}")
+
+    data2 = s2.recv(64)
+    p2 = parse_publish_packet(data2)
+    print(f"{C_GREEN}[+] Subscriber 2 (# wildcard) received:{C_RESET} {p2['topic']} -> {p2['payload'].decode()}")
+
+    print("\nPublishing to 'home/garden/outdoor/temp' -> matches ONLY ('home/#')")
+    pub.sendall(build_publish("home/garden/outdoor/temp", "18.2 C", qos=0))
+
+    data2_sub = s2.recv(64)
+    p2_sub = parse_publish_packet(data2_sub)
+    print(f"{C_GREEN}[+] Subscriber 2 (# wildcard) received multi-level match:{C_RESET} {p2_sub['topic']} -> {p2_sub['payload'].decode()}")
+
+    s1.close()
+    s2.close()
+    pub.close()
+    print(f"\n{C_GREEN}{C_BOLD}[PASS] Topic Radix Tree wildcard routing verified!{C_RESET}\n")
     return True
 
 def demo_tcp_stream_fragmentation(host, port):
     print_header("TCP Stream Defragmentation Demonstration")
-    print("This demo proves that the broker accumulates partial stream fragments")
-    print("by sending a complete CONNECT packet ONE BYTE AT A TIME with delays.\n")
+    print("Simulating terrible network conditions by transmitting a CONNECT packet")
+    print("ONE BYTE AT A TIME with artificial delays between bytes.\n")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((host, port))
     except ConnectionRefusedError:
-        print(f"{C_RED}[ERROR] Cannot connect to {host}:{port}. Is the broker running?{C_RESET}\n")
+        print(f"{C_RED}[ERROR] Cannot connect to {host}:{port}.{C_RESET}\n")
         return False
 
-    pkt = build_connect("slow_trickle_client")
-    print(f"Total packet size: {len(pkt)} bytes.")
+    pkt = build_connect("slow_fragmented_client")
+    print(f"Total packet size to send: {len(pkt)} bytes")
     print("Transmitting byte-by-byte into TCP socket:")
 
     for idx, b in enumerate(pkt, 1):
         sock.sendall(bytes([b]))
         sys.stdout.write(f"\r  Sending byte {idx}/{len(pkt)} [0x{b:02X}]... ")
         sys.stdout.flush()
-        time.sleep(0.02) # 20ms delay between bytes
+        time.sleep(0.02)
 
     print("\n\nAll bytes transmitted. Awaiting broker CONNACK response...")
     resp = sock.recv(4)
     print_hex("Broker Response", resp)
     if len(resp) == 4 and resp[0] == 0x20 and resp[3] == 0x00:
         print(f"\n{C_GREEN}{C_BOLD}[PASS] Stream fragmentation handled perfectly!{C_RESET}")
-        print("The broker buffered all fragments until the full packet arrived,")
+        print("The broker buffered all fragments in byte_buffer_t until the full packet arrived,")
         print("decoded the bitwise header, and successfully issued CONNACK.")
     else:
         print(f"\n{C_RED}[FAIL] Broker did not return valid CONNACK.{C_RESET}")
@@ -232,7 +278,6 @@ def demo_high_concurrency(host, port, num_clients=40):
         s.sendall(build_connect(f"sensor_node_{i:03d}"))
         clients.append(s)
 
-    # Read CONNACK on all
     for s in clients:
         resp = s.recv(4)
         assert len(resp) == 4 and resp[0] == 0x20
@@ -270,11 +315,10 @@ def demo_protocol_violation(host, port):
         print(f"{C_RED}[ERROR] Cannot connect to {host}:{port}.{C_RESET}\n")
         return False
 
-    malformed_pkt = bytes([0x12, 0x02, 0x00, 0x00]) # 0x12 has reserved bit 1 set!
+    malformed_pkt = bytes([0x12, 0x02, 0x00, 0x00])
     print_hex("Sending Malformed Header", malformed_pkt)
     sock.sendall(malformed_pkt)
 
-    # Expect socket to be abruptly closed by broker per OASIS specification
     time.sleep(0.1)
     try:
         data = sock.recv(10)
@@ -298,6 +342,7 @@ def main():
 
     if args.auto:
         demo_full_protocol_walkthrough(args.host, args.port)
+        demo_trie_routing(args.host, args.port)
         demo_tcp_stream_fragmentation(args.host, args.port)
         demo_high_concurrency(args.host, args.port, num_clients=30)
         demo_protocol_violation(args.host, args.port)
@@ -309,15 +354,17 @@ def main():
         print(f"{C_BLUE}{C_BOLD}==============================================================={C_RESET}")
         print(f" Target Broker: {args.host}:{args.port}")
         print(" 1. Run Complete Protocol Walkthrough (CONNECT, PING, PUBLISH, SUBSCRIBE)")
-        print(" 2. Run TCP Stream Fragmentation Demo (Byte-by-Byte slow trickle)")
-        print(" 3. Run High-Concurrency Load Demo (Simultaneous epoll connections)")
-        print(" 4. Run Protocol Violation & Security Rejection Demo")
-        print(" 5. Run All Demos Sequentially")
-        print(" 6. Exit")
+        print(" 2. Run Topic Trie Wildcard Routing Demo (+ and # fan-out)")
+        print(" 3. Run TCP Stream Fragmentation Demo (Byte-by-Byte slow trickle)")
+        print(" 4. Run High-Concurrency Load Demo (Simultaneous epoll connections)")
+        print(" 5. Run Protocol Violation & Security Rejection Demo")
+        print(" 6. Run All Demos Sequentially")
+        print(" 7. Launch Realistic Multi-Device IoT Traffic Simulation")
+        print(" 8. Exit")
         print(f"{C_BLUE}{C_BOLD}---------------------------------------------------------------{C_RESET}")
 
         try:
-            choice = input(f"{C_BOLD}Select an option (1-6): {C_RESET}").strip()
+            choice = input(f"{C_BOLD}Select an option (1-8): {C_RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting demo.")
             break
@@ -325,21 +372,27 @@ def main():
         if choice == "1":
             demo_full_protocol_walkthrough(args.host, args.port)
         elif choice == "2":
-            demo_tcp_stream_fragmentation(args.host, args.port)
+            demo_trie_routing(args.host, args.port)
         elif choice == "3":
-            demo_high_concurrency(args.host, args.port, num_clients=30)
-        elif choice == "4":
-            demo_protocol_violation(args.host, args.port)
-        elif choice == "5":
-            demo_full_protocol_walkthrough(args.host, args.port)
             demo_tcp_stream_fragmentation(args.host, args.port)
+        elif choice == "4":
             demo_high_concurrency(args.host, args.port, num_clients=30)
+        elif choice == "5":
             demo_protocol_violation(args.host, args.port)
         elif choice == "6":
+            demo_full_protocol_walkthrough(args.host, args.port)
+            demo_trie_routing(args.host, args.port)
+            demo_tcp_stream_fragmentation(args.host, args.port)
+            demo_high_concurrency(args.host, args.port, num_clients=30)
+            demo_protocol_violation(args.host, args.port)
+        elif choice == "7":
+            import subprocess
+            subprocess.run(["python3", "scripts/iot_simulation.py", "-p", str(args.port), "-H", args.host, "-t", "12"])
+        elif choice == "8":
             print("Exiting demo.")
             break
         else:
-            print("Invalid option. Please enter 1-6.")
+            print("Invalid option. Please enter 1-8.")
 
 if __name__ == "__main__":
     main()

@@ -95,9 +95,9 @@ The architecture directly synthesizes core principles from canonical literature 
                                         |
                                         v
 +-------------------------------------------------------------------------------+
-| PHASE 2: HANDSHAKE & ROUTING ENGINE                                           |
+| PHASE 2: HANDSHAKE & ROUTING ENGINE [STATUS: FULLY IMPLEMENTED & VERIFIED]   |
 | - Formal CONNECT / CONNACK state machine and client session establishment     |
-| - Clean Session vs. Persistent Session state management                       |
+| - Clean Session vs. Persistent Session state management and hash indexing     |
 | - Topic Radix Tree (Trie) construction with hierarchical node splitting       |
 | - Wildcard subscription resolution (+ single-level and # multi-level)         |
 | - SUBSCRIBE / SUBACK and UNSUBSCRIBE / UNSUBACK handlers                      |
@@ -105,12 +105,22 @@ The architecture directly synthesizes core principles from canonical literature 
                                         |
                                         v
 +-------------------------------------------------------------------------------+
-| PHASE 3: PAYLOAD FAN-OUT & RESILIENCE                                         |
+| PHASE 3: PAYLOAD FAN-OUT & RESILIENCE [STATUS: FULLY IMPLEMENTED & VERIFIED] |
 | - Trie traversal on PUBLISH with binary payload fan-out to matched sockets   |
-| - Non-blocking write queuing (tx_buffer) with EPOLLOUT edge handling          |
+| - In-memory Retained Message Store with immediate subscriber delivery         |
 | - QoS 0 and QoS 1 delivery flows with Packet Identifier tracking & PUBACK     |
+| - Offline QoS 1 queueing and automatic replay upon session resumption         |
 | - PINGREQ keep-alive watchdog timer with 1.5x timeout expiration              |
 | - Socket disconnection handling and Last Will and Testament (LWT) publishing  |
++---------------------------------------+---------------------------------------+
+                                        |
+                                        v
++-------------------------------------------------------------------------------+
+| ADVANCED NETWORKING & SIMULATION [STATUS: FULLY IMPLEMENTED & VERIFIED]       |
+| - RFC 8439 ChaCha20 stream cipher & HMAC-SHA256 authenticated encryption      |
+| - Dual-criterion token bucket rate-limiting (packets/sec) & bandwidth cap     |
+| - Live broker telemetry engine (uptime, throughput, drop accounting)          |
+| - Multi-device IoT smart city simulation script (scripts/iot_simulation.py)  |
 +-------------------------------------------------------------------------------+
 ```
 
@@ -365,12 +375,17 @@ The primary network I/O loop executes in a single reactor thread:
 | **Phase 1** | CONNECT / PUBLISH / SUBSCRIBE / PINGREQ parsing | `tests/test_parser.c` & `test_server_e2e.py` | **COMPLETED** |
 | **Phase 1** | Stream Defragmentation (1-byte chunk arrival) | `tests/test_parser.c` & `test_server_e2e.py` | **COMPLETED** |
 | **Phase 1** | Multi-packet pipelining in single TCP segment | `tests/test_parser.c` pipelining test | **COMPLETED** |
-| **Phase 2** | Clean Session vs Persistent Session state store | Unit tests for session resumption | Planned |
-| **Phase 2** | Radix Tree (Topic Trie) data structure | Unit tests for topic insertion & removal | Planned |
-| **Phase 2** | Single (`+`) and Multi-level (`#`) Wildcards | Unit tests for wildcard matching | Planned |
-| **Phase 3** | Trie traversal & multi-subscriber fan-out | Integration test with 1 pub & $N$ subs | Planned |
-| **Phase 3** | Keep-Alive 1.5x timeout watchdog | Integration test with simulated idle drop | Planned |
-| **Phase 3** | Last Will and Testament (LWT) delivery | Integration test with ungraceful TCP drop | Planned |
+| **Phase 2** | Clean Session vs Persistent Session state store | `tests/test_session.c` resumption tests | **COMPLETED** |
+| **Phase 2** | Radix Tree (Topic Trie) data structure | `tests/test_trie.c` insertion & removal tests | **COMPLETED** |
+| **Phase 2** | Single (`+`) and Multi-level (`#`) Wildcards | `tests/test_trie.c` wildcard matching tests | **COMPLETED** |
+| **Phase 3** | Trie traversal & multi-subscriber fan-out | `tests/test_advanced_e2e.py` pub/sub tests | **COMPLETED** |
+| **Phase 3** | In-memory Retained Message Store & delivery | `tests/test_advanced_e2e.py` retained tests | **COMPLETED** |
+| **Phase 3** | Offline QoS 1 queueing & reconnection replay | `tests/test_advanced_e2e.py` persistent tests | **COMPLETED** |
+| **Phase 3** | Keep-Alive 1.5x timeout watchdog | `tests/test_advanced_e2e.py` idle drop tests | **COMPLETED** |
+| **Phase 3** | Last Will and Testament (LWT) delivery | `tests/test_advanced_e2e.py` ungraceful drop | **COMPLETED** |
+| **Advanced** | ChaCha20 & HMAC-SHA256 Payload Encryption | `tests/test_crypto.c` test suite | **COMPLETED** |
+| **Advanced** | Token-Bucket Rate Limiter & Bandwidth Cap | `tests/test_throttle.c` burst tests | **COMPLETED** |
+| **Advanced** | Multi-Device IoT Traffic Simulation Harness | `scripts/iot_simulation.py` multi-device run | **COMPLETED** |
 
 ---
 

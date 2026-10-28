@@ -4,6 +4,13 @@
 #include "mqtt_protocol.h"
 #include "mqtt_packet.h"
 #include "buffer.h"
+#include "trie.h"
+#include "session.h"
+#include "retained.h"
+#include "throttle.h"
+#include "crypto.h"
+#include "telemetry.h"
+
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <time.h>
@@ -11,7 +18,9 @@
 
 /**
  * @file server.h
- * @brief Non-blocking event-driven TCP server using Linux epoll reactor architecture
+ * @brief Complete Non-blocking event-driven TCP server using Linux epoll reactor architecture
+ *        Supporting Topic Trie, Session Persistence, LWT, Keep-Alive Watchdog,
+ *        Payload Encryption, Rate Limiting, and Telemetry.
  * 
  * Course: IT365 Advanced Computer Networks
  * Project: Zero-Dependency MQTT Broker
@@ -35,18 +44,21 @@ typedef enum {
  * Per-client connection context
  */
 typedef struct client_conn {
-    int           fd;
-    char          ip[INET_ADDRSTRLEN];
-    uint16_t      port;
-    conn_state_t  state;
+    int               fd;
+    char              ip[INET_ADDRSTRLEN];
+    uint16_t          port;
+    conn_state_t      state;
     
-    byte_buffer_t rx_buffer;    /* Incoming TCP stream defragmentation buffer */
-    byte_buffer_t tx_buffer;    /* Outgoing TCP write queue */
+    byte_buffer_t     rx_buffer;    /* Incoming TCP stream defragmentation buffer */
+    byte_buffer_t     tx_buffer;    /* Outgoing TCP write queue */
 
-    char          client_id[MQTT_MAX_CLIENT_ID_LEN];
-    uint8_t       clean_session;
-    uint16_t      keep_alive_sec;
-    time_t        last_active_time;
+    char              client_id[MQTT_MAX_CLIENT_ID_LEN];
+    uint8_t           clean_session;
+    uint16_t          keep_alive_sec;
+    time_t            last_active_time;
+
+    /* Per-client rate limiter */
+    client_throttle_t throttle;
 
     struct client_conn *prev;
     struct client_conn *next;
@@ -56,23 +68,36 @@ typedef struct client_conn {
  * Broker server instance
  */
 typedef struct {
-    int               listen_fd;
-    int               epoll_fd;
-    char              host[64];
-    uint16_t          port;
-    volatile bool     running;
+    int                  listen_fd;
+    int                  epoll_fd;
+    char                 host[64];
+    uint16_t             port;
+    volatile bool        running;
 
-    client_conn_t    *clients[SERVER_MAX_CLIENTS];
-    size_t            active_client_count;
+    client_conn_t       *clients[SERVER_MAX_CLIENTS];
+    size_t               active_client_count;
 
-    pthread_mutex_t   lock;     /* Thread-safe protection for client registry */
+    pthread_mutex_t      lock;     /* Thread-safe protection for client registry */
+
+    /* Core Routing & Session Engines */
+    trie_node_t         *topic_trie;
+    session_registry_t   session_registry;
+    retained_store_t     retained_store;
+
+    /* Traffic Shaping & Telemetry */
+    global_throttle_config_t throttle_cfg;
+    broker_telemetry_t       telemetry;
+
+    /* Optional Cryptographic Engine */
+    bool                 crypto_enabled;
+    uint8_t              crypto_key[CHACHA20_KEY_SIZE];
 
     /* Statistics */
-    uint64_t          total_connections_accepted;
-    uint64_t          total_packets_received;
-    uint64_t          total_packets_sent;
-    uint64_t          total_bytes_received;
-    uint64_t          total_bytes_sent;
+    uint64_t             total_connections_accepted;
+    uint64_t             total_packets_received;
+    uint64_t             total_packets_sent;
+    uint64_t             total_bytes_received;
+    uint64_t             total_bytes_sent;
 } mqtt_server_t;
 
 /**
@@ -99,5 +124,18 @@ void server_cleanup(mqtt_server_t *srv);
  * Send raw binary packet to client (handles non-blocking write & queuing)
  */
 bool server_send_bytes(mqtt_server_t *srv, client_conn_t *client, const uint8_t *data, size_t len);
+
+/**
+ * Route a publish packet to all matched subscribers in Trie (Payload Fan-out)
+ */
+void server_route_publish(mqtt_server_t *srv, const char *topic,
+                          const uint8_t *payload, size_t payload_len,
+                          uint8_t qos, uint8_t retain, uint16_t packet_id,
+                          const char *sender_client_id);
+
+/**
+ * Disconnect a client, with option to publish Last Will & Testament
+ */
+void server_disconnect_client(mqtt_server_t *srv, client_conn_t *client, bool graceful);
 
 #endif /* SERVER_H */

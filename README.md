@@ -46,18 +46,24 @@ Most real-world IoT deployments rely on large, heavy third-party message brokers
 |                       User Space MQTT Broker Daemon                             |
 |                                                                                 |
 |  +------------------------+      +--------------------+      +---------------+  |
-|  |     server.[c/h]       | ---> |    buffer.[c/h]    | ---> | mqtt_parser.c |  |
-|  | - Master listen socket |      | - Dynamic rx_buf   |      | - Fixed header|  |
-|  | - accept4() non-block  |      | - Defragmentation  |      | - Rem. length |  |
-|  | - Client session map   |      | - Compaction drain |      | - Bit flags   |  |
-|  +------------------------+      +--------------------+      +-------+-------+  |
-|                                                                      |          |
-|                                                                      v          |
+|  |     server.[c/h]       | ---> |    throttle.[c/h]  | ---> |  buffer.[c/h] |  |
+|  | - Master listen socket |      | - Token bucket     |      | - Dynamic rx  |  |
+|  | - accept4() non-block  |      | - Packet & byte cap|      | - Defrag      |  |
+|  +-----------+------------+      +--------------------+      +-------+-------+  |
+|              |                                                       |          |
+|              v                                                       v          |
+|  +------------------------+      +--------------------+      +---------------+  |
+|  |    telemetry.[c/h]     |      |     crypto.[c/h]   | <--- | mqtt_parser.c |  |
+|  | - Uptime & throughput  |      | - ChaCha20 cipher  |      | - Wire decode |  |
+|  | - Dropped & Tx/Rx stats|      | - HMAC-SHA256 MAC  |      | - Table 2.2   |  |
+|  +------------------------+      +---------+----------+      +-------+-------+  |
+|                                            |                         |          |
+|                                            v                         v          |
 |  +------------------------+      +--------------------+      +---------------+  |
 |  |      session.[c/h]     | <--- |     trie.[c/h]     | <--- | mqtt_encoder.c|  |
-|  | - Client states        |      | - Radix Tree       |      | - CONNACK     |  |
-|  | - Keep-alive timers    |      | - Wildcards (+, #) |      | - SUBACK      |  |
-|  | - Thread-safe mutex    |      | - O(K) lookup      |      | - PUBACK      |  |
+|  | - Client state machine |      | - Topic Radix Tree |      | - Binary wire |  |
+|  | - QoS 1 offline queue  |      | - Wildcards (+, #) |      | - Responses   |  |
+|  | - Retained store link  |      | - O(K) fan-out     |      | (CONN/SUB/PUB)|  |
 |  +------------------------+      +--------------------+      +---------------+  |
 +---------------------------------------------------------------------------------+
 ```
@@ -68,9 +74,21 @@ Most real-world IoT deployments rely on large, heavy third-party message brokers
 - **TCP Stream Buffer (`src/buffer.c`, `include/buffer.h`):**
   Dynamic linear byte buffer with dynamic capacity doubling and `memmove()`-based compaction. Accommodates partial packet fragments and pipelines multiple packets in a single TCP read.
 - **Bitwise Protocol Decoder (`src/mqtt_parser.c`, `include/mqtt_parser.h`):**
-  Strict decoder for OASIS MQTT 3.1.1 control packets (`CONNECT`, `PUBLISH`, `SUBSCRIBE`, `PINGREQ`, `DISCONNECT`). Decodes variable-byte remaining lengths (1 to 4 bytes) and enforces Table 2.2 reserved flag rules.
+  Strict decoder for OASIS MQTT 3.1.1 control packets (`CONNECT`, `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, `PINGREQ`, `DISCONNECT`). Decodes variable-byte remaining lengths (1 to 4 bytes) and enforces Table 2.2 reserved flag rules.
 - **Binary Response Serializer (`src/mqtt_encoder.c`, `include/mqtt_encoder.h`):**
   Constructs wire-format responses (`CONNACK`, `PINGRESP`, `SUBACK`, `PUBACK`).
+- **Topic Radix Tree / Topic Trie (`src/trie.c`, `include/trie.h`):**
+  Hierarchical prefix tree splitting topics on `/`. Resolves exact topics, single-level wildcards (`+`), and multi-level wildcards (`#`) in $O(K)$ time with subscriber deduplication (MQTT-3.3.5-1).
+- **Session State Machine & Offline Queue (`src/session.c`, `include/session.h`):**
+  Hash-indexed client session registry. Manages clean vs. persistent sessions (`clean_session == 0`), Last Will and Testament (LWT) parameters, and bounded offline FIFO queueing for QoS 1 messages with replay upon reconnection.
+- **Retained Message Repository (`src/retained.c`, `include/retained.h`):**
+  In-memory store retaining the latest payload per topic. Automatically delivers retained messages to matching new subscribers immediately following `SUBACK`. Payload length 0 clears retained messages.
+- **Zero-Dependency Cryptography Engine (`src/crypto.c`, `include/crypto.h`):**
+  Pure C implementation of the ChaCha20 stream cipher (RFC 8439), SHA-256 (RFC 6234), and HMAC-SHA256 authenticated payload encryption with constant-time MAC verification.
+- **High-Resolution Traffic Shaper & Throttling (`src/throttle.c`, `include/throttle.h`):**
+  Dual-criterion token-bucket rate limiter enforcing configurable packets-per-second and bandwidth bytes-per-second thresholds per client socket to mitigate Denial of Service (DoS).
+- **Broker Live Telemetry (`src/telemetry.c`, `include/telemetry.h`):**
+  Thread-safe metrics engine tracking active connections, packet counters, bandwidth bytes, LWT fires, and throttle drops with JSON telemetry output.
 
 ---
 
@@ -90,6 +108,12 @@ acn-course-project/
 │   ├── mqtt_parser.h              # Bitwise packet decoder & framing prototypes
 │   ├── mqtt_encoder.h             # Binary response packet serializer prototypes
 │   ├── buffer.h                   # Dynamic stream accumulation buffer prototypes
+│   ├── trie.h                     # Topic Radix Tree (Trie) & wildcard matching
+│   ├── session.h                  # Client session state machine & offline FIFO queue
+│   ├── retained.h                 # Retained message repository
+│   ├── crypto.h                   # ChaCha20 & HMAC-SHA256 authenticated encryption
+│   ├── throttle.h                 # Token bucket rate-limiter and traffic shaper
+│   ├── telemetry.h                # Live metrics, packet accounting, and JSON dump
 │   ├── server.h                   # Non-blocking TCP server & epoll reactor definitions
 │   └── logger.h                   # Colorized, formatted logging utilities
 ├── src/
@@ -98,11 +122,25 @@ acn-course-project/
 │   ├── buffer.c                   # Stream accumulation buffer implementation
 │   ├── mqtt_parser.c              # Strict bitwise packet decoder implementation
 │   ├── mqtt_encoder.c             # Binary packet serializers
+│   ├── trie.c                     # Topic Radix Tree implementation
+│   ├── session.c                  # Client session store & offline queueing
+│   ├── retained.c                 # Retained message store implementation
+│   ├── crypto.c                   # RFC 8439 ChaCha20 + SHA256 / HMAC implementation
+│   ├── throttle.c                 # Token-bucket rate limiter implementation
+│   ├── telemetry.c                # Telemetry counters & reporting
 │   └── logger.c                   # Timestamped logging implementation
+├── scripts/
+│   ├── demo.py                    # Interactive terminal demonstration harness
+│   └── iot_simulation.py          # Multi-device IoT smart city & industrial simulation
 └── tests/
     ├── test_buffer.c              # Unit tests for stream buffer growth, drain, boundaries
     ├── test_parser.c              # Unit tests for bitwise decoder, variable integers, framing
-    └── test_server_e2e.py         # End-to-end integration tests using pure Python sockets
+    ├── test_trie.c                # Unit tests for Radix Tree insertion, wildcards, deduplication
+    ├── test_session.c             # Unit tests for clean/persistent sessions & offline queue
+    ├── test_throttle.c            # Unit tests for token bucket rate limiting & bandwidth caps
+    ├── test_crypto.c              # Unit tests for ChaCha20, SHA-256, and HMAC authenticated encryption
+    ├── test_server_e2e.py         # End-to-end integration tests using pure Python sockets
+    └── test_advanced_e2e.py       # End-to-end tests for wildcards, retained messages, LWT, watchdog
 ```
 
 ---
@@ -116,8 +154,9 @@ acn-course-project/
 - Python 3 (for running end-to-end integration tests; uses only Python standard library)
 
 ### Compilation
-Build the broker binary:
+Build the broker binary and all test suites:
 ```bash
+make clean
 make
 ```
 This produces an optimized `mqtt_broker` executable compiled with:
@@ -135,21 +174,38 @@ gcc -Wall -Wextra -pedantic -std=c11 -O2 -Iinclude -D_POSIX_C_SOURCE=200809L -pt
 
 # Enable verbose debug logging and packet hex dumps
 ./mqtt_broker -p 1883 -d
+
+# Enable Software ChaCha20 / HMAC-SHA256 Payload Encryption
+./mqtt_broker -p 1883 -e -k "nitk-secret-key-32bytes-it365!!"
+
+# Enable Network Traffic Throttling (e.g. 50 pkts/sec limit, burst 100, 1 MB/s bandwidth)
+./mqtt_broker -p 1883 -r 50 -b 100 -m 1048576
+
+# Combine all security, networking, and debug options
+./mqtt_broker -p 1883 -d -e -k "nitk-secret-key-32bytes-it365!!" -r 100 -b 150
 ```
 
 ---
 
-## 5. Live Demonstration Guide
+## 5. Live Demonstration & IoT Traffic Simulation
 
-To demo the broker for evaluations or presentations, you can run the broker with debug logging in one terminal and the interactive demo in a second terminal:
-
-### Terminal 1: Launch Broker with Debug Logs
+### 1. Multi-Device IoT Traffic Simulation (`scripts/iot_simulation.py`)
+Simulate real-world traffic between dozens of virtual IoT devices in smart cities and industrial environments:
 ```bash
-./mqtt_broker -d -p 1883
-```
-This prints live incoming TCP connections, hex dumps of binary stream chunks, and decoded MQTT fields.
+# Run simulation against running broker (e.g. port 1883)
+make sim
 
-### Terminal 2: Run the Interactive Demo
+# Or customize device counts, duration, and port:
+python3 scripts/iot_simulation.py -p 1883 --weather 4 --grid 3 --fleet 3 --camera 2 --duration 15
+```
+**Simulated IoT Fleet:**
+- **Weather Stations (`city/+/weather`):** Ambient temperature, humidity, and barometric pressure sensors publishing periodic telemetry.
+- **Power Grid Sub-Stations (`grid/substation/+/status`):** Voltage, frequency, and load power monitoring.
+- **Fleet GPS Trackers (`fleet/+/telemetry`):** High-frequency coordinates, speed, and fuel monitoring.
+- **Security Cameras with LWT (`facility/camera/+/status`):** Heartbeats and automated **Last Will and Testament (LWT)** failover alarm delivery upon simulated network failure.
+- **Central SCADA Control Dashboard (`#`):** Wildcard subscriber ingesting, validating, and calculating aggregate message arrival throughput in real-time.
+
+### 2. Interactive Step-by-Step Demo (`scripts/demo.py`)
 ```bash
 # Interactive menu:
 make demo
@@ -162,15 +218,19 @@ make demo-auto
 
 The interactive demo menu allows demonstrating:
 1. **Full Protocol Walkthrough:** Live `CONNECT`, `PINGREQ`, `PUBLISH` (QoS 0 & 1), `SUBSCRIBE`, and `DISCONNECT`.
-2. **TCP Stream Defragmentation:** Sends a packet **1 byte at a time** with delays to prove application-layer stream reassembly.
-3. **C10K High-Concurrency epoll Load:** Connects 30+ simultaneous clients in milliseconds without thread-lock overhead.
-4. **Protocol Security & Validation:** Intentionally transmits malformed header flags to verify strict OASIS spec rejection.
+2. **Topic Radix Tree Wildcards (`+` and `#`):** Demonstrates dynamic fan-out and subscriber deduplication.
+3. **Retained Message Delivery:** Publishes a retained system config and connects a late-joining subscriber to receive it immediately.
+4. **Last Will and Testament (LWT):** Simulates ungraceful sensor drop and verifies automated alarm routing.
+5. **Persistent Session Resumption:** Queues QoS 1 messages while a client is offline and flushes upon reconnection (`clean_session=0`).
+6. **TCP Stream Defragmentation:** Sends a packet **1 byte at a time** with delays to prove application-layer stream reassembly.
+7. **C10K High-Concurrency epoll Load:** Connects 30+ simultaneous clients in milliseconds without thread-lock overhead.
+8. **Protocol Security & Validation:** Intentionally transmits malformed header flags to verify strict OASIS spec rejection.
 
 ---
 
 ## 6. Comprehensive Test Suite
 
-The test suite validates both unit-level protocol parsing and network-level integration.
+The test suite validates both unit-level protocol parsing, tree routing, cryptographic security, rate limiting, and network-level integration.
 
 ### Running All Tests
 ```bash
@@ -189,93 +249,72 @@ make test
 #### 2. Protocol Parser & Framing Unit Tests (`tests/test_parser.c`)
 - **Variable-Byte Remaining Length Decoding & Encoding:** Tested for 1-byte ($0-127$), 2-byte ($128-16,383$), 3-byte ($16,384-2,097,151$), and 4-byte ($2,097,152-268,435,455$) boundary values.
 - **Fixed Header Flag Validation:** Validates Table 2.2 of OASIS standard. Strict rejection of reserved flag violations on `CONNECT`, `SUBSCRIBE`, `PUBLISH` (QoS 3 rejection, QoS 0 with DUP rejection), `PINGREQ`, and `DISCONNECT`.
-- **Packet Parsers:** Validates `CONNECT` (protocol name `"MQTT"`, protocol level `0x04`, CleanSession, KeepAlive, ClientID), `PUBLISH` (Topic name, wildcards rejection, QoS 0/1, payload extraction), and `SUBSCRIBE` (multiple topic filters, requested QoS).
-- **TCP Stream Defragmentation:** Simulates worst-case network behavior by feeding raw packets byte-by-byte into `byte_buffer_t`, verifying that the parser signals `MQTT_NEED_MORE_DATA` until the exact terminating byte is delivered.
-- **Pipelined Multi-Packet Streams:** Verifies that multiple concatenated packets arriving in a single `recv()` chunk are parsed and drained sequentially.
+- **Packet Parsers:** Validates `CONNECT`, `PUBLISH`, and `SUBSCRIBE`.
+- **TCP Stream Defragmentation:** Byte-by-byte feed verification.
+- **Pipelined Multi-Packet Streams:** Sequential extraction of concatenated packets.
 
-#### 3. End-to-End Network Integration Tests (`tests/test_server_e2e.py`)
+#### 3. Topic Radix Tree Unit Tests (`tests/test_trie.c`)
+- Exact topic registration, lookup, and unsubscription
+- Single-level wildcard (`+`) matching across multiple hierarchy depths
+- Multi-level wildcard (`#`) matching and leaf resolution
+- Multi-subscriber deduplication (MQTT-3.3.5-1)
+- Socket FD updates and complete client teardown on disconnect
+
+#### 4. Session State & Offline Queue Tests (`tests/test_session.c`)
+- Clean session (`clean_session == 1`) vs. persistent session (`clean_session == 0`) creation
+- Session retrieval and resurrection across socket reconnections
+- Bounded FIFO offline message queueing for QoS 1 packets
+- Offline message replay and session destruction
+
+#### 5. Token-Bucket Rate Limiter Tests (`tests/test_throttle.c`)
+- High-resolution token bucket initialization and refill logic
+- Burst capacity handling and burst depletion
+- Rate-limiting packet drops and drop accounting
+- Dual bandwidth bytes-per-second throttling
+
+#### 6. Cryptography Engine Tests (`tests/test_crypto.c`)
+- RFC 6234 standard SHA-256 test vectors
+- RFC 8439 ChaCha20 stream cipher XOR keystream verification
+- HMAC-SHA256 message authentication code computation
+- Authenticated payload encryption and tampering rejection
+
+#### 7. Server Core Integration Tests (`tests/test_server_e2e.py`)
 - Automated daemon lifecycle management via `subprocess`
 - Real TCP connection establishment over loopback socket
 - Full `CONNECT` $\rightarrow$ `CONNACK` handshake verification
 - Keep-alive heartbeat: `PINGREQ` $\rightarrow$ `PINGRESP` verification
 - QoS 1 publish flow: `PUBLISH` $\rightarrow$ `PUBACK` with matching 16-bit packet identifier
 - Subscription flow: `SUBSCRIBE` $\rightarrow$ `SUBACK` with granted QoS array
-- **TCP Stream Fragmentation:** Sends a valid packet 1 byte at a time with sleep intervals, verifying broker stream reassembly
-- **Concurrency Test:** Establishes 30 concurrent client sockets simultaneously, performing handshakes and heartbeats across all sessions in parallel without drops
+- TCP Stream Fragmentation (1-byte chunks with delays)
+- Concurrency test (30 simultaneous sockets)
 
-### Test Output
-```
->>> RUNNING BUFFER TESTS <<<
-./build/test_buffer
-========================================
-RUNNING BUFFER UNIT TESTS
-========================================
-[TEST] Running test_buffer_basic...
-  -> PASS: test_buffer_basic
-[TEST] Running test_buffer_growth...
-  -> PASS: test_buffer_growth
-ALL BUFFER TESTS PASSED SUCCESSFULLY!
-
->>> RUNNING PARSER & FRAMING TESTS <<<
-./build/test_parser
-========================================
-RUNNING MQTT PARSER & FRAMING UNIT TESTS
-========================================
-[TEST] Running test_remaining_length_encoding_decoding...
-  -> PASS: test_remaining_length_encoding_decoding
-[TEST] Running test_fixed_header_flags...
-  -> PASS: test_fixed_header_flags
-[TEST] Running test_connect_packet_parsing...
-  -> PASS: test_connect_packet_parsing
-[TEST] Running test_publish_packet_parsing...
-  -> PASS: test_publish_packet_parsing
-[TEST] Running test_subscribe_packet_parsing...
-  -> PASS: test_subscribe_packet_parsing
-[TEST] Running test_stream_defragmentation (byte-by-byte TCP stream accumulation)...
-  -> PASS: test_stream_defragmentation
-[TEST] Running test_packet_pipelining (multiple packets in single TCP chunk)...
-  -> PASS: test_packet_pipelining
-ALL MQTT PARSER TESTS PASSED SUCCESSFULLY!
-
->>> RUNNING END-TO-END INTEGRATION TESTS <<<
-python3 tests/test_server_e2e.py
-==================================================
-STARTING END-TO-END INTEGRATION TEST SUITE
-Target Broker: 127.0.0.1:11883
-==================================================
-  -> Testing CONNECT handshake...
-     [PASS] CONNACK received successfully (Accepted)
-  -> Testing PINGREQ heartbeat...
-     [PASS] PINGRESP received successfully
-  -> Testing PUBLISH QoS 1 and PUBACK...
-     [PASS] PUBACK received with matching PacketID 1337
-  -> Testing SUBSCRIBE and SUBACK...
-     [PASS] SUBACK received for 2 topics with matching PacketID 99
-  -> Testing TCP Stream Fragmentation (sending 1 byte at a time with delays)...
-     [PASS] Fragmented TCP stream properly defragmented and accepted
-  -> Testing Concurrent Client Handling (30 simultaneous sockets)...
-     [PASS] Successfully handled 30 concurrent client sessions
-
-==================================================
-ALL END-TO-END INTEGRATION TESTS PASSED (100% OK)
-==================================================
-
-==============================================
-ALL PHASE 1 TESTS PASSED SUCCESSFULLY!
-==============================================
-```
+#### 8. Advanced Network & Protocol Tests (`tests/test_advanced_e2e.py`)
+- Multi-level (`#`) and single-level (`+`) wildcard publish fan-out
+- In-memory retained message delivery to late-joining subscribers
+- Last Will and Testament (LWT) broadcast upon abrupt socket abort
+- Persistent session resumption with automatic offline QoS 1 queue flushing
+- Keep-alive 1.5x timeout watchdog disconnection of unresponsive sockets
 
 ---
 
-## 7. Implementation Status & Next Phases
+## 7. Implementation Status Matrix
 
-For the complete end-to-end architectural roadmap covering all phases, refer to [`PLAN.md`](PLAN.md).
-
-| Phase | Description | Status |
+| Component | Description | Status |
 |---|---|---|
-| **Phase 1: Foundation** | Non-blocking TCP server (epoll), dynamic stream buffer (`byte_buffer_t`), bitwise MQTT 3.1.1 packet parser, response encoders, and integration test suite. | **COMPLETED** |
-| **Phase 2: Handshake & Routing** | CONNECT/CONNACK state logic, Clean vs Persistent session store, Topic Radix Tree (Trie) for O(K) lookup, wildcard matching (`+` and `#`). | Planned |
-| **Phase 3: Payload Fan-out & Resilience** | Trie traversal on PUBLISH with binary payload fan-out to subscriber sockets, PINGREQ keep-alive timeout watchdog, ungraceful teardown, and LWT delivery. | Planned |
+| **Linux epoll Reactor** | Non-blocking socket I/O multiplexing, `accept4()`, level-triggered event loop | **COMPLETED** |
+| **Stream Accumulation Buffer** | Dynamic capacity growth, defragmentation, linear compaction drain | **COMPLETED** |
+| **Bitwise Packet Parser** | Fixed header flags (Table 2.2), variable byte length, CONNECT, PUBLISH, SUBSCRIBE, PINGREQ, DISCONNECT | **COMPLETED** |
+| **Wire Response Serializer** | CONNACK, SUBACK, PUBACK, PINGRESP, binary PUBLISH fan-out frame serialization | **COMPLETED** |
+| **Topic Radix Tree (Trie)** | $O(K)$ hierarchical topic resolution, `+` single-level, `#` multi-level wildcards, deduplication | **COMPLETED** |
+| **Session State Registry** | Clean vs Persistent sessions, hash table registry, QoS 1 offline queue and replay | **COMPLETED** |
+| **Retained Message Store** | In-memory latest payload retention, immediate dispatch on subscription, clear on 0-len payload | **COMPLETED** |
+| **Keep-Alive Watchdog** | $1.5 \times$ keep-alive expiration, background reactor tick, idle socket teardown | **COMPLETED** |
+| **Last Will & Testament (LWT)** | Automatic LWT broadcast to subscribers on ungraceful drops, cleared on clean DISCONNECT | **COMPLETED** |
+| **ChaCha20 & HMAC-SHA256** | Zero-dependency pure C payload cipher and authenticated encryption | **COMPLETED** |
+| **Traffic Shaper & Throttling** | Dual-criterion token-bucket rate limiter (packets/sec and bandwidth bytes/sec) | **COMPLETED** |
+| **Live Telemetry & Metrics** | Real-time counters, active connection tracking, throughput statistics | **COMPLETED** |
+| **IoT Multi-Device Simulation** | Multi-device simulation harness with smart city sensors, fleet GPS, and SCADA dashboard | **COMPLETED** |
+| **Interactive Demo Harness** | Step-by-step menu-driven protocol demonstration with live broker feedback | **COMPLETED** |
 
 ---
 
@@ -284,4 +323,6 @@ For the complete end-to-end architectural roadmap covering all phases, refer to 
 1. **Banks, A., Gupta, R.** *MQTT Version 3.1.1.* OASIS Standard, 2014.
 2. **Stevens, W. R., Fenner, B., Rudoff, A. M.** *UNIX Network Programming: The Sockets Networking API.* Addison-Wesley Professional, 3rd Edition, 2003.
 3. **Morrison, D. R.** *PATRICIA - Practical Algorithm To Retrieve Information Coded in Alphanumeric.* Journal of the ACM (JACM), 1968.
-4. **Kegel, D.** *The C10K problem.* `http://www.kegel.com/c10k.html`, 1999.
+4. **Nir, Y., Langley, A.** *ChaCha20 and Poly1305 for IETF Protocols.* RFC 8439, 2018.
+5. **Eastlake, D., Hansen, T.** *US Secure Hash Algorithms (SHA and SHA-based HMAC and HKDF).* RFC 6234, 2011.
+6. **Kegel, D.** *The C10K problem.* `http://www.kegel.com/c10k.html`, 1999.

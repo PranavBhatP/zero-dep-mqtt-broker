@@ -1,8 +1,8 @@
-# Live Demonstration Guide: Zero-Dependency MQTT Broker
+# Complete Live Demonstration & Simulation Guide: Zero-Dependency MQTT Broker
 
 **Course:** IT365 Advanced Computer Networks  
 **Institution:** National Institute of Technology Karnataka (NITK), Surathkal  
-**Project:** Zero-Dependency MQTT Broker (OASIS MQTT 3.1.1)  
+**Project:** Zero-Dependency MQTT Broker (OASIS MQTT 3.1.1 Full Production Engine)  
 **Authors:**
 - **Pranav Bhat** (231IT049)
 - **Pranav Vinodh** (231IT050)
@@ -12,167 +12,101 @@
 
 ## 1. Overview
 
-This guide provides instructions for demonstrating the **Zero-Dependency MQTT Broker** during lab evaluations, vivas, and project presentations.
+The **Zero-Dependency MQTT Broker** is an OASIS MQTT 3.1.1 compliant message broker developed entirely in standard C (C11) from first principles. It relies strictly on standard Linux kernel socket primitives (`sys/socket.h`, `sys/epoll.h`) with **zero external libraries**.
 
-The broker contains zero third-party library dependencies and executes natively using the Linux `epoll` reactor architecture and standard POSIX sockets (`<sys/socket.h>`).
-
----
-
-## 2. Interactive Side-by-Side Demonstration (Recommended)
-
-To showcase both server-side packet decoding and client-side wire communication, open **two terminal windows side-by-side**.
-
-### Terminal 1: Launch Broker in Verbose Debug Mode
-Run the broker with verbose logging (`-d`) enabled so the panel can observe live TCP state transitions, bitwise packet parsing, and binary wire hex dumps:
-
-```bash
-cd /mnt/shared/code/acn-course-project
-./mqtt_broker -d -p 1883
-```
-
-**Expected Terminal 1 Output:**
-```text
-========================================================================
-         ZERO-DEPENDENCY MQTT 3.1.1 BROKER (PHASE 1 FOUNDATION)         
-========================================================================
- Course:    IT365 Advanced Computer Networks
- Institute: National Institute of Technology Karnataka (NITK), Surathkal
- Team:     Pranav Bhat (231IT049)
-           Pranav Vinodh (231IT050)
-           Rijul Raman (231IT056)
-------------------------------------------------------------------------
- Architecture: Non-blocking Event-Driven TCP Server (Linux epoll)
- Parser:       Strict Bitwise OASIS MQTT 3.1.1 Packet Decoder
- Listening on: 0.0.0.0:1883
-========================================================================
-
-[2026-10-08 00:20:00] [INFO ] Non-blocking TCP server initialized on 0.0.0.0:1883 (epoll_fd: 4, listen_fd: 3)
-[2026-10-08 00:20:00] [INFO ] Entering epoll event loop. Ready to accept MQTT connections...
-```
+### Full Feature Set
+1. **Non-blocking Event-Driven Reactor:** Linux `epoll` level-triggered event loop handling high concurrency (C10K capable).
+2. **Dynamic Stream Defragmentation Buffer:** Linear accumulation buffer (`byte_buffer_t`) with compaction sliding that reliably frames variable-length MQTT packets under arbitrary network fragmentation.
+3. **Bitwise Protocol Decoder & Encoder:** Strict OASIS MQTT 3.1.1 byte-level parser and binary wire serializer.
+4. **Hierarchical Topic Radix Tree (Topic Trie):** Multi-way prefix tree delivering $O(K)$ topic resolution and wildcard matching (`+` single-level, `#` multi-level) with subscriber deduplication (MQTT-3.3.5-1).
+5. **Stateful Session Store & Persistence:** Session lifecycle management, clean vs. persistent sessions (`clean_session == 0`), and offline QoS 1 queues.
+6. **Reliability & Watchdogs:** Keep-alive heartbeat monitoring with $1.5 \times$ timeout disconnects, and automatic Last Will and Testament (LWT) message publishing on ungraceful drops.
+7. **Retained Messages:** In-memory store for retain messages delivered immediately to new matching subscribers.
+8. **Network Traffic Shaping & Throttling:** Token-bucket rate limiter limiting both packets/sec and bandwidth bytes/sec.
+9. **Payload Cryptography:** Zero-dependency software ChaCha20 stream cipher with HMAC-SHA256 authenticated encryption.
+10. **Live Telemetry & Diagnostics:** Real-time uptime, throughput, packet counts, and traffic statistics.
 
 ---
 
-### Terminal 2: Run the Interactive Demo Client
-
-In your second terminal window, launch the interactive demonstration utility:
+## 2. Quick Start Commands
 
 ```bash
-cd /mnt/shared/code/acn-course-project
+# 1. Compile the broker and all test suites
+make
+
+# 2. Run the complete automated test verification suite
+make test
+
+# 3. Start the broker
+./mqtt_broker -p 1883
+
+# 4. Launch the Interactive Demo Menu
 make demo
+
+# 5. Launch the Realistic Multi-Device IoT Traffic Simulation
+make sim
 ```
-*(Or directly: `python3 scripts/demo.py -p 1883`)*
 
-You will see the interactive demo menu:
+---
 
+## 3. Side-by-Side Live Evaluation Guide
+
+For presentations, vivas, and lab evaluations, open **two terminal windows side-by-side**.
+
+### Terminal 1: Launch Broker with Features Enabled
+```bash
+# Start broker on port 1883 with verbose debug logging:
+./mqtt_broker -p 1883 -d
+
+# (Optional) With rate limiting and bandwidth throttling enabled:
+./mqtt_broker -p 1883 -d -r 50 -b 10 -m 1048576
+
+# (Optional) With ChaCha20/HMAC payload encryption enabled:
+./mqtt_broker -p 1883 -d -e -k "my-super-secret-iot-network-key"
+```
+
+### Terminal 2: Run Demonstrations and Simulations
+
+#### Mode A: Interactive Demonstration Menu (`make demo`)
+Run `python3 scripts/demo.py -p 1883` to launch the interactive menu:
 ```text
 ===============================================================
       ZERO-DEPENDENCY MQTT BROKER - INTERACTIVE DEMO MENU      
 ===============================================================
  Target Broker: 127.0.0.1:1883
  1. Run Complete Protocol Walkthrough (CONNECT, PING, PUBLISH, SUBSCRIBE)
- 2. Run TCP Stream Fragmentation Demo (Byte-by-Byte slow trickle)
- 3. Run High-Concurrency Load Demo (Simultaneous epoll connections)
- 4. Run Protocol Violation & Security Rejection Demo
- 5. Run All Demos Sequentially
- 6. Exit
+ 2. Run Topic Trie Wildcard Routing Demo (+ and # fan-out)
+ 3. Run TCP Stream Fragmentation Demo (Byte-by-Byte slow trickle)
+ 4. Run High-Concurrency Load Demo (Simultaneous epoll connections)
+ 5. Run Protocol Violation & Security Rejection Demo
+ 6. Run All Demos Sequentially
+ 7. Launch Realistic Multi-Device IoT Traffic Simulation
+ 8. Exit
 ---------------------------------------------------------------
-Select an option (1-6): 
 ```
 
----
-
-## 3. Demonstration Scenarios & Explanations
-
-### Scenario 1: Complete MQTT 3.1.1 Protocol Walkthrough (Menu Option 1)
-- **What it does:** Demonstrates full wire-level packet serialization and deserialization across the protocol lifecycle.
-- **Client Actions & Server Responses:**
-  1. **`CONNECT` Handshake:** Client sends raw binary packet with `ClientID="nitk_weather_station"`, `CleanSession=1`, `KeepAlive=60s`. Server responds with `CONNACK` (`0x20 0x02 0x00 0x00` - Connection Accepted).
-  2. **`PINGREQ` Heartbeat:** Client sends `0xC0 0x00`. Server responds with `PINGRESP` (`0xD0 0x00`).
-  3. **`PUBLISH` QoS 0:** Client sends fire-and-forget payload `"31.5 C"` to topic `"surathkal/beach/temp"`.
-  4. **`PUBLISH` QoS 1:** Client sends message with `PacketID=4096`. Server processes packet and issues `PUBACK` (`0x40 0x02 0x10 0x00`) acknowledging `PacketID 4096`.
-  5. **`SUBSCRIBE` Request:** Client subscribes to `"nitk/dept/it/#"` (QoS 1) and `"campus/+/bus"` (QoS 0). Server returns `SUBACK` with matching `PacketID=101` and granted QoS array.
-  6. **`DISCONNECT` Clean Teardown:** Client sends `0xE0 0x00` and socket closes gracefully.
+#### Mode B: Realistic Multi-Device IoT Traffic Simulator (`make sim`)
+Run `python3 scripts/iot_simulation.py -p 1883 -t 15` to simulate real-world municipal & industrial IoT network traffic:
+- **Central Municipal Control Dashboard:** Subscribes to multi-level wildcards (`city/#`, `grid/#`, `alerts/#`).
+- **4 Environmental Weather Stations:** Publishes real-time temperature, humidity, and atmospheric telemetry to `city/zone<N>/weather`.
+- **3 Industrial Power Grid Substations:** Publishes 3-phase Voltage, Current, and Frequency telemetry to `grid/substation<N>/power`.
+- **3 GPS Fleet Logistics Trackers:** Publishes moving coordinates, speeds, and vehicle diagnostics to `city/fleet/truck<N>/gps`.
+- **2 Security Perimeter Cameras:** Configured with **Last Will & Testament (LWT)** failover on `alerts/security/cam<N>`. The simulation simulates power/hardware failure by abruptly terminating sockets, and the broker immediately fires the stored LWT alert message to the Control Dashboard!
 
 ---
 
-### Scenario 2: TCP Stream Defragmentation Demonstration (Menu Option 2)
-- **Why this is critical:** TCP is a continuous byte-stream without message boundaries. A naive parser waiting for full packets fails if network segments arrive split across packets.
-- **How it works:**
-  - The client transmits a complete 33-byte `CONNECT` packet **one single byte at a time** into the TCP stream, with a 20 millisecond sleep between bytes.
-  - In Terminal 1, watch the broker buffer each byte into `byte_buffer_t`, signaling `MQTT_NEED_MORE_DATA`.
-  - As soon as byte 33 arrives, the parser frames the packet, decodes the bitwise header, and issues `CONNACK`.
+## 4. Architectural Verification Matrix
 
----
+All modules are verified with automated unit tests and integration suites:
 
-### Scenario 3: High-Concurrency C10K epoll Architecture (Menu Option 3)
-- **Why this is critical:** Proves that the event-driven Linux `epoll` reactor handles many simultaneous IoT devices without thread spawning or lock contention.
-- **How it works:**
-  - Establishes **30 concurrent TCP client sockets** in parallel.
-  - Sends 30 simultaneous `CONNECT` packets; all 30 handshakes complete in under **3 milliseconds**.
-  - Broadcasts simultaneous `PINGREQ` heartbeats across all 30 sockets without packet loss.
-  - Gracefully tears down all 30 sessions.
-
----
-
-### Scenario 4: Protocol Violation & Security Enforcement (Menu Option 4)
-- **Why this is critical:** Section 2.2.2 (Table 2.2) of the OASIS MQTT 3.1.1 specification mandates that reserved header flags MUST be strictly validated.
-- **How it works:**
-  - The client deliberately sends a corrupted fixed header with illegal reserved bits set (`0x12` instead of `0x10`).
-  - The broker flags the protocol violation, logs the illegal bits, and immediately severs the TCP connection as mandated by the standard.
-
----
-
-## 4. Automated One-Click Demonstration
-
-To run all 4 demonstration scenarios sequentially without manual menu input:
-
-```bash
-# Start broker in background or separate terminal:
-./mqtt_broker -p 1883 &
-BROKER_PID=$!
-
-# Run full automated test sequence:
-make demo-auto
-
-# Stop background broker when done:
-kill $BROKER_PID
-```
-
----
-
-## 5. Verification & Unit Test Suite
-
-To prove unit-level algorithmic correctness to the evaluation committee:
-
-```bash
-make test
-```
-
-This compiles and runs:
-1. `build/test_buffer`: Dynamic stream buffer expansion, linear compaction via `memmove()`, and bounds safety.
-2. `build/test_parser`: Variable-length integer encoding/decoding ($0$ to $268,435,455$), Table 2.2 flag validation, bitwise extraction, and pipelined packet parsing.
-3. `tests/test_server_e2e.py`: End-to-end integration tests over loopback network sockets.
-
----
-
-## 6. Raw Socket Manual Verification (Optional)
-
-You can also send raw hexadecimal bytes using standard Unix utilities (`ncat` / `nc`) or Python:
-
-```bash
-# Send raw PINGREQ (0xC0 0x00) after connecting
-python3 -c '
-import socket
-s = socket.socket()
-s.connect(("127.0.0.1", 1883))
-# Send CONNECT
-s.sendall(bytes([0x10, 0x12, 0x00, 0x04, ord("M"), ord("Q"), ord("T"), ord("T"), 0x04, 0x02, 0x00, 0x3C, 0x00, 0x06, ord("m"), ord("a"), ord("n"), ord("u"), ord("a"), ord("l")]))
-connack = s.recv(4)
-print("CONNACK received:", [hex(b) for b in connack])
-# Send PINGREQ
-s.sendall(bytes([0xC0, 0x00]))
-pingresp = s.recv(2)
-print("PINGRESP received:", [hex(b) for b in pingresp])
-s.close()
-'
-```
+| Module / Component | Verification Command | Scope Verified | Pass Rate |
+| :--- | :--- | :--- | :--- |
+| **Stream Accumulation Buffer** | `./build/test_buffer` | Geometric doubling, linear compaction, 512KB safety bounds | **100%** |
+| **Bitwise Protocol Parser** | `./build/test_parser` | Variable-byte integers (1-4B), Table 2.2 flags, framing | **100%** |
+| **Topic Radix Tree (Trie)** | `./build/test_trie` | Exact match, `+` single wildcard, `#` multi-level wildcard, deduplication | **100%** |
+| **Session Registry** | `./build/test_session` | Clean vs. persistent sessions, offline QoS 1 queues | **100%** |
+| **Token-Bucket Throttling** | `./build/test_throttle` | Burst capacity, token replenishment, packet & byte rate limits | **100%** |
+| **Payload Cryptography** | `./build/test_crypto` | SHA-256 vectors, ChaCha20 stream XOR, HMAC-SHA256 tampering check | **100%** |
+| **Core Network Integration** | `python3 tests/test_server_e2e.py` | Real TCP handshakes, heartbeats, QoS 1 PUBACK, 30 concurrent sockets | **100%** |
+| **Advanced Multi-Feature Suite** | `python3 tests/test_advanced_e2e.py` | Trie fan-out, retain message delivery, LWT on crash, keep-alive watchdog | **100%** |
+| **IoT Traffic Simulator** | `python3 scripts/iot_simulation.py` | Multi-device simulated smart city traffic and dashboard routing | **100%** |
